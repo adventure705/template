@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>템플릿 관리 시스템</title>
+    <!-- Tailwind CSS 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons 로드 (아이콘 사용) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase SDK 로드 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // getDocs, getDoc, where 등을 포함하여 Firestore 기능을 완벽하게 로드
+        import { getFirestore, doc, getDoc, addDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Firestore 디버그 로깅 활성화
+        setLogLevel('debug');
+
+        // 전역 변수 설정 (Window 객체에 할당하여 스크립트에서 접근 가능하게 함)
+        window.firebase = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken,
+            getFirestore, doc, getDoc, addDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, serverTimestamp
+        };
+        
+        // 전역 설정 변수 (Canvas 환경에서 제공됨)
+        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    </script>
+    
+    <style>
+        /* [요청사항 반영] 모든 텍스트에 Arial 폰트 적용 */
+        body, button, input, select, textarea, .document-container, #templateEditor, .downloaded-content {
+            font-family: 'Arial', sans-serif !important;
+        }
+        
+        /* contentEditable div의 기본 스타일 */
+        #templateEditor {
+            min-height: 400px;
+            border: 1px solid #ccc;
+            padding: 20px;
+            background-color: white;
+            line-height: 1.6;
+            cursor: text;
+        }
+        #templateEditor:focus {
+            outline: none;
+        }
+        /* 다운로드된 HTML 파일의 기본 스타일 정의 */
+        .downloaded-content {
+            box-sizing: border-box;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .toolbar-button {
+            padding: 8px 10px;
+            border-radius: 6px;
+            transition: background-color 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid transparent;
+        }
+        .toolbar-button:hover {
+            background-color: #e5e7eb;
+            border-color: #d1d5db;
+        }
+        /* 목록 스크롤바 스타일 */
+        #nameListContainer, #templateList {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        /* 메인 뷰의 섹션 컨테이너가 flexbox를 사용하도록 설정 */
+        #homeSections {
+            display: flex;
+            gap: 1.5rem;
+        }
+        /* 템플릿 선택과 링크/이름 입력 섹션이 flex item으로 동작하며 세로 높이를 맞춤 */
+        #templateSelectionBlock, #linkInputBlock {
+            flex: 1;
+        }
+        
+        /* 툴바 구분선 */
+        .toolbar-divider {
+            width: 1px;
+            height: 24px;
+            background-color: #d1d5db;
+            margin: 0 4px;
+            align-self: center;
+        }
+        
+        /* 색상 선택기 래퍼 */
+        .color-picker-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            border: 1px solid #e5e7eb;
+            padding: 2px 6px;
+            border-radius: 6px;
+            background-color: white;
+        }
+        .color-label {
+            font-size: 12px;
+            color: #4b5563;
+        }
+        /* Drag & Drop 스타일 */
+        #nameListContainer > div[draggable="true"] {
+            transition: background-color 0.2s;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 sm:p-8">
+
+    <div class="max-w-5xl mx-auto bg-white shadow-xl rounded-xl p-6 md:p-10">
+        <h1 class="text-3xl font-bold mb-6 text-gray-800 border-b pb-2">템플릿 관리 시스템</h1>
+        
+        <!-- 네비게이션 탭 -->
+        <div class="flex mb-6 border-b border-gray-200">
+            <button id="navHome" class="px-4 py-2 text-lg font-medium border-b-2 border-transparent text-gray-500 hover:text-indigo-600 hover:border-indigo-600 transition duration-150 mr-4">
+                ✨ 템플릿 사용
+            </button>
+            <button id="navEditor" class="px-4 py-2 text-lg font-medium border-b-2 border-transparent text-gray-500 hover:text-indigo-600 hover:border-indigo-600 transition duration-150">
+                ⚙️ 템플릿 편집/관리
+            </button>
+        </div>
+
+        <div id="statusMessage" class="hidden p-3 mb-4 rounded-lg text-sm" role="alert"></div>
+        <div id="loadingIndicator" class="p-4 bg-yellow-100 rounded-lg text-center text-yellow-800 hidden">
+            <div class="flex items-center justify-center">
+                <i data-lucide="loader-2" class="w-5 h-5 animate-spin mr-2"></i>
+                데이터 로드 중...
+            </div>
+        </div>
+
+        <!-- 뷰 컨테이너 -->
+        <div id="mainViewContainer">
+            <!-- Home View (Template Selector & Substitution) -->
+            <div id="homeView" class="view-content">
+                
+                <!-- 1. 템플릿 선택 & 2. 링크 및 이름 입력 섹션 (Flexbox로 높이 통일) -->
+                <div id="homeSections" class="mb-8 flex flex-col md:flex-row">
+                    <!-- 1. 템플릿 선택 -->
+                    <div id="templateSelectionBlock" class="p-4 border rounded-lg bg-gray-50 mb-6 md:mb-0">
+                        <h2 class="text-2xl font-bold mb-4 text-gray-800">1. 템플릿 선택</h2>
+                        <label for="templateSelect" class="block text-sm font-medium text-gray-700 mb-2">사용할 템플릿 선택</label>
+                        <select id="templateSelect" class="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white mb-3">
+                            <option value="">-- 템플릿을 선택하세요 --</option>
+                        </select>
+                        <button id="loadTemplateBtn" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 rounded-lg transition duration-200" disabled>
+                            선택한 템플릿 로드
+                        </button>
+                    </div>
+
+                    <!-- 2. 링크 및 이름 입력 -->
+                    <div id="linkInputBlock" class="p-4 border rounded-lg bg-indigo-50/50">
+                        <h2 class="text-2xl font-bold mb-4 text-gray-800">2. 링크 및 이름 입력</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label for="linkInput1" class="block text-sm font-medium text-gray-700 mb-1">링크 1 URL ([LINK1_POS])</label>
+                                <input type="url" id="linkInput1" placeholder="e.g., https://www.google.com" 
+                                       class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                            </div>
+                            <div>
+                                <label for="linkInput2" class="block text-sm font-medium text-gray-700 mb-1">링크 2 URL ([LINK2_POS])</label>
+                                <input type="url" id="linkInput2" placeholder="e.g., https://www.github.com"
+                                       class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                            </div>
+                            <div>
+                                <label for="nameSelectHome" class="block text-sm font-medium text-gray-700 mb-1">문서 내 이름 선택 ([NAME_POS])</label>
+                                <select id="nameSelectHome" class="w-full p-2 border border-gray-300 rounded-lg text-sm bg-white">
+                                    <option value="">-- 이름 선택 안 함 --</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <!-- NEW: Link 3 and Link 4 (Optional) -->
+                        <div class="mt-4 pt-4 border-t border-indigo-200">
+                            <h3 class="text-xl font-medium text-gray-700 mb-3">추가 링크 (선택 사항)</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="linkInput3" class="block text-sm font-medium text-gray-700 mb-1">링크 3 URL ([LINK3_POS])</label>
+                                    <input type="url" id="linkInput3" placeholder="e.g., https://www.example.com/3"
+                                           class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                                </div>
+                                <div>
+                                    <label for="linkInput4" class="block text-sm font-medium text-gray-700 mb-1">링크 4 URL ([LINK4_POS])</label>
+                                    <input type="url" id="linkInput4" placeholder="e.g., https://www.example.com/4"
+                                           class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Customer Name Input for Filename -->
+                        <div class="mt-4 pt-4 border-t border-indigo-200">
+                            <label for="customerNameInput" class="block text-sm font-medium text-gray-700 mb-1">
+                                파일 이름에 사용할 고객 이름 (선택 사항)
+                            </label>
+                            <input type="text" id="customerNameInput" placeholder="예: 홍길동"
+                                class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. 치환 및 4. 다운로드 버튼 (가로폭 통일) -->
+                <div class="grid grid-cols-2 gap-4 mb-8">
+                    <!-- Substitution Area (3) -->
+                    <button id="processBtn"
+                            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-8 rounded-lg shadow-md transition duration-200 text-lg" disabled>
+                        3. 플레이스홀더 치환 및 미리보기
+                    </button>
+                
+                    <!-- Download Button (4) -->
+                    <button id="downloadBtn" disabled
+                            class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-200 text-lg">
+                        4. HTML 파일 다운로드 (.html)
+                    </button>
+                </div>
+
+                <!-- Final Preview (No Number) -->
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">최종 문서 미리보기</h2>
+                <div id="previewArea" class="p-5 border border-dashed border-gray-300 bg-gray-50 rounded-lg min-h-[100px] document-container">
+                    <p class="text-gray-500 italic">템플릿을 로드하고 플레이스홀더를 치환하면 결과가 여기에 표시됩니다.</p>
+                </div>
+                
+            </div>
+
+            <!-- Editor View (Template Management & Name List) -->
+            <div id="editorView" class="view-content hidden">
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">1. 템플릿 관리</h2>
+
+                <!-- Template List -->
+                <div class="mb-6 p-4 border rounded-lg bg-white shadow-sm">
+                    <h3 class="text-xl font-semibold mb-3 border-b pb-2">저장된 템플릿 목록</h3>
+                    <div id="templateList" class="divide-y divide-gray-100">
+                        <p class="text-gray-500 text-sm p-1">템플릿을 로드 중입니다...</p>
+                    </div>
+                    <button id="newTemplateBtn" class="mt-4 w-full bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-200 text-sm">
+                        + 새 템플릿 생성
+                    </button>
+                </div>
+
+                <!-- Template Editor Panel (Hidden by default) -->
+                <div id="templateEditorPanel" class="hidden border-2 p-6 rounded-xl bg-gray-50 mb-6">
+                    <h3 id="editorTitleText" class="text-xl font-bold mb-4">새 템플릿</h3>
+                    
+                    <label for="templateTitleInput" class="block text-sm font-medium text-gray-700 mb-1">템플릿 제목</label>
+                    <input type="text" id="templateTitleInput" placeholder="템플릿 제목을 입력하세요" class="w-full p-2 border border-gray-300 rounded-lg text-sm mb-4">
+
+                    <!-- Template Editor -->
+                    <label for="templateEditor" class="block text-lg font-medium text-gray-700 mb-2">
+                        템플릿 내용 편집
+                        <span class="text-sm font-normal text-gray-500 block" style="font-family: Arial, sans-serif !important;">
+                            (플레이스홀더 사용: 
+                            <code style="font-family: Arial, sans-serif !important;">[LINK1_POS]</code>, 
+                            <code style="font-family: Arial, sans-serif !important;">[LINK2_POS]</code>, 
+                            <code style="font-family: Arial, sans-serif !important;">[LINK3_POS]</code>, 
+                            <code style="font-family: Arial, sans-serif !important;">[LINK4_POS]</code>, 
+                            <code style="font-family: Arial, sans-serif !important;">[NAME_POS]</code>)
+                        </span>
+                    </label>
+                    
+                    <!-- [요청사항 반영] 확장된 에디터 툴바 -->
+                    <div id="toolbar" class="flex flex-wrap items-center gap-1 p-2 bg-gray-100 border border-b-0 border-gray-300 rounded-t-lg">
+                        <!-- 기본 서식 -->
+                        <button class="toolbar-button" data-command="bold" title="굵게"><i data-lucide="bold" class="w-5 h-5"></i></button>
+                        <button class="toolbar-button" data-command="italic" title="기울임꼴"><i data-lucide="italic" class="w-5 h-5"></i></button>
+                        <button class="toolbar-button" data-command="underline" title="밑줄"><i data-lucide="underline" class="w-5 h-5"></i></button>
+                        
+                        <div class="toolbar-divider"></div>
+
+                        <!-- 목록 -->
+                        <button class="toolbar-button" data-command="insertUnorderedList" title="글머리 기호 목록"><i data-lucide="list" class="w-5 h-5"></i></button>
+                        <button class="toolbar-button" data-command="insertOrderedList" title="번호 매기기 목록"><i data-lucide="list-ordered" class="w-5 h-5"></i></button>
+                        
+                        <div class="toolbar-divider"></div>
+
+                        <!-- 스타일 및 폰트 -->
+                        <select id="formatBlock" class="p-1 border border-gray-300 rounded-lg text-sm bg-white h-9" title="제목 스타일">
+                            <option value="P">본문</option>
+                            <option value="H2">제목 2</option>
+                            <option value="H3">제목 3</option>
+                            <option value="H4">제목 4</option>
+                        </select>
+
+                        <!-- 글씨체 선택 -->
+                        <select id="fontName" class="p-1 border border-gray-300 rounded-lg text-sm bg-white h-9" title="글꼴">
+                            <option value="Arial" selected>Arial</option>
+                            <option value="Courier New">Courier New</option>
+                            <option value="Georgia">Georgia</option>
+                            <option value="Times New Roman">Times New Roman</option>
+                            <option value="Verdana">Verdana</option>
+                        </select>
+
+                        <!-- [요청사항 반영] 글꼴 크기 입력 (숫자 입력 필드) -->
+                        <div class="flex items-center space-x-1" title="글꼴 크기 (1-7 사이의 숫자 입력)">
+                            <label for="fontSizeInput" class="text-sm text-gray-700">크기:</label>
+                            <input type="number" id="fontSizeInput" min="1" max="7" value="3" 
+                                class="p-1 border border-gray-300 rounded-lg text-sm w-16 h-9 text-center" 
+                                title="글꼴 크기 (1-7 사이의 숫자 입력)">
+                            <button id="applyFontSizeBtn" class="bg-gray-200 hover:bg-gray-300 p-1 rounded-md text-sm transition duration-150" title="선택 영역에 크기 적용">
+                                적용
+                            </button>
+                        </div>
+                        
+                        <div class="toolbar-divider"></div>
+
+                        <!-- 글씨 색상 및 배경 색상 -->
+                        <div class="color-picker-wrapper" title="글자 색상">
+                            <span class="color-label">글자</span>
+                            <input type="color" id="foreColorPicker" class="w-6 h-6 p-0 border-none bg-transparent cursor-pointer" value="#000000">
+                        </div>
+
+                        <div class="color-picker-wrapper" title="배경 색상 (형광펜)">
+                            <span class="color-label">배경</span>
+                            <input type="color" id="backColorPicker" class="w-6 h-6 p-0 border-none bg-transparent cursor-pointer" value="#ffffff">
+                        </div>
+                    </div>
+                    
+                    <div id="templateEditor" contenteditable="true" class="document-container rounded-b-lg border-2 border-t-0 border-gray-300 focus-within:border-blue-500 transition duration-150 shadow-sm">
+                        <p style="font-size: 16px; margin-bottom: 12pt;">새로운 템플릿 내용을 여기에 붙여넣거나 편집하세요.</p>
+                        <p style="font-size: 16px; margin-bottom: 12pt;">예시: Dear <span style="font-weight: bold;">[NAME_POS]</span>, 자세한 내용은 [LINK1_POS]에서 확인하세요.</p>
+                    </div>
+
+                    <div class="flex justify-end gap-3 mt-4">
+                        <button id="cancelEditBtn" class="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg text-sm">취소</button>
+                        <button id="saveTemplateBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-sm">템플릿 저장</button>
+                    </div>
+                </div>
+
+                <!-- Name Manager Section (Moved to Editor View) -->
+                <div class="border p-4 rounded-lg bg-white shadow-sm">
+                    <h2 class="text-xl font-bold mb-4 text-gray-700">2. 이름 관리 (추가/삭제)</h2>
+                    <div class="flex gap-2 mb-3">
+                        <input type="text" id="newNameInput" placeholder="추가할 이름을 입력하세요"
+                               class="flex-grow p-2 border border-gray-300 rounded-lg text-sm">
+                        <button id="addNameBtn" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-200 text-sm">
+                            추가
+                        </button>
+                    </div>
+                    <div id="nameListContainer" class="border border-gray-200 p-2 rounded-lg bg-gray-50">
+                        <p class="text-gray-500 text-sm p-1">저장된 이름이 없습니다.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+    </div>
+
+    <script type="module">
+        // Firebase Global Variables
+        let app = null;
+        let db = null;
+        let auth = null;
+        let userId = null; 
+        let isAuthReady = false;
+
+        // UI Elements
+        const navHome = document.getElementById('navHome');
+        const navEditor = document.getElementById('navEditor');
+        const homeView = document.getElementById('homeView');
+        const editorView = document.getElementById('editorView');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const statusMessage = document.getElementById('statusMessage');
+
+        // Home View Elements
+        const templateSelect = document.getElementById('templateSelect');
+        const nameSelectHome = document.getElementById('nameSelectHome');
+        const loadTemplateBtn = document.getElementById('loadTemplateBtn');
+        const linkInput1 = document.getElementById('linkInput1');
+        const linkInput2 = document.getElementById('linkInput2');
+        const linkInput3 = document.getElementById('linkInput3');
+        const linkInput4 = document.getElementById('linkInput4');
+        const processBtn = document.getElementById('processBtn');
+        const previewArea = document.getElementById('previewArea');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const customerNameInput = document.getElementById('customerNameInput'); 
+
+        // Editor View Elements
+        const templateListContainer = document.getElementById('templateList');
+        const newTemplateBtn = document.getElementById('newTemplateBtn');
+        const templateEditorPanel = document.getElementById('templateEditorPanel');
+        const editorTitleText = document.getElementById('editorTitleText');
+        const templateTitleInput = document.getElementById('templateTitleInput');
+        const templateEditor = document.getElementById('templateEditor');
+        const toolbar = document.getElementById('toolbar');
+        const formatBlockSelect = document.getElementById('formatBlock');
+        const fontNameSelect = document.getElementById('fontName');
+        const fontSizeInput = document.getElementById('fontSizeInput');
+        const applyFontSizeBtn = document.getElementById('applyFontSizeBtn'); // NEW
+        const foreColorPicker = document.getElementById('foreColorPicker');
+        const backColorPicker = document.getElementById('backColorPicker');
+        const cancelEditBtn = document.getElementById('cancelEditBtn');
+        const saveTemplateBtn = document.getElementById('saveTemplateBtn');
+        const newNameInput = document.getElementById('newNameInput');
+        const addNameBtn = document.getElementById('addNameBtn');
+        const nameListContainer = document.getElementById('nameListContainer');
+
+        // State
+        let currentView = 'home';
+        let templates = [];
+        let names = []; // Array of names in sorted order
+        let currentEditingTemplateId = null;
+        let currentLoadedTemplate = null;
+        let draggedItem = null; // for drag and drop
+
+        const PLACEHOLDERS = {
+            LINK1: '[LINK1_POS]',
+            LINK2: '[LINK2_POS]',
+            LINK3: '[LINK3_POS]',
+            LINK4: '[LINK4_POS]',
+            NAME: '[NAME_POS]'
+        };
+        const FONT_FAMILY = 'Arial, sans-serif';
+
+        // --- Utility Functions ---
+        function showStatus(message, type = 'success') {
+            statusMessage.textContent = message;
+            
+            // 1. 모든 스타일링 및 'hidden' 클래스를 제거하여 초기화
+            statusMessage.classList.remove(
+                'hidden', 
+                'bg-red-100', 'border-red-400', 'text-red-700', 
+                'bg-green-100', 'border-green-400', 'text-green-700', 
+                'border'
+            );
+            
+            // 2. 타입에 따라 스타일 적용 (오류일 경우 빨간색 배경)
+            if (type === 'error') {
+                statusMessage.classList.add('bg-red-100', 'border-red-400', 'text-red-700', 'border');
+            } else {
+                statusMessage.classList.add('bg-green-100', 'border-green-400', 'text-green-700', 'border');
+            }
+            
+            // 3. 메시지 표시
+            statusMessage.classList.remove('hidden');
+        }
+
+        function switchView(viewName) {
+            currentView = viewName;
+            homeView.classList.toggle('hidden', viewName !== 'home');
+            editorView.classList.toggle('hidden', viewName !== 'editor');
+            
+            navHome.classList.toggle('border-indigo-600', viewName === 'home');
+            navHome.classList.toggle('text-indigo-600', viewName === 'home');
+            navHome.classList.toggle('border-transparent', viewName !== 'home');
+            navHome.classList.toggle('text-gray-500', viewName !== 'home');
+
+            navEditor.classList.toggle('border-indigo-600', viewName === 'editor');
+            navEditor.classList.toggle('text-indigo-600', viewName === 'editor');
+            navEditor.classList.toggle('border-transparent', viewName !== 'editor');
+            navEditor.classList.toggle('text-gray-500', viewName !== 'editor');
+
+            if (viewName === 'editor') {
+                hideTemplateEditor();
+            }
+            lucide.createIcons(); 
+        }
+
+        // --- Firebase Setup ---
+        
+        async function initFirebase() {
+            loadingIndicator.classList.remove('hidden');
+
+            const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, getFirestore } = window.firebase;
+            const { firebaseConfig, initialAuthToken } = window;
+
+            if (Object.keys(firebaseConfig).length > 0) {
+                try {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    
+                    let userCredential;
+                    if (initialAuthToken) {
+                        userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        userCredential = await signInAnonymously(auth);
+                    }
+                    userId = userCredential.user.uid;
+                    isAuthReady = true;
+                    console.log("Firebase Auth Ready. User ID:", userId);
+                    startDataListeners();
+                } catch (error) {
+                    console.error("Firebase initialization or authentication failed:", error);
+                    showStatus("Firebase 연결 및 인증에 실패했습니다. 기능이 제한될 수 있습니다.", 'error');
+                }
+            } else {
+                console.warn("Firebase config not found. Running in offline/guest mode (data will not persist).");
+                isAuthReady = true;
+                userId = 'guest-' + crypto.randomUUID();
+                startDataListeners();
+            }
+            loadingIndicator.classList.add('hidden');
+        }
+
+        function getCollectionRef(collectionName, isPublic = true) {
+            const { collection } = window.firebase;
+            if (isPublic) {
+                // Public data: /artifacts/{appId}/public/data/collectionName
+                return collection(db, 'artifacts', window.appId, 'public', 'data', collectionName);
+            } else {
+                // Private data: /artifacts/{appId}/users/{userId}/collectionName
+                return collection(db, 'artifacts', window.appId, 'users', userId, collectionName);
+            }
+        }
+        
+        // --- Name Management (Single Document Array) ---
+
+        function getNameDocRef() {
+            const { doc } = window.firebase;
+            // Private data: /artifacts/{appId}/users/{userId}/names/userNames
+            return doc(db, 'artifacts', window.appId, 'users', userId, 'names', 'userNames');
+        }
+
+        function startDataListeners() {
+            if (!isAuthReady) return;
+
+            // 1. Templates Listener (Public)
+            const templateRef = getCollectionRef('templates', true);
+            window.firebase.onSnapshot(templateRef, (snapshot) => {
+                templates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderTemplateSelect();
+                renderTemplateList();
+            }, (error) => {
+                console.error("Template listener error:", error);
+                showStatus("템플릿 목록 로드 중 오류 발생.", 'error');
+            });
+
+            // 2. Names Listener (Private - single document)
+            const nameDocRef = getNameDocRef();
+            window.firebase.onSnapshot(nameDocRef, (docSnapshot) => {
+                // 이름 배열을 가져오고 정렬된 이름을 디폴트로 설정
+                if (docSnapshot.exists()) {
+                    names = docSnapshot.data().namesArray || [];
+                } else {
+                    names = [];
+                }
+                
+                renderNameSelects();
+                renderNameList();
+                
+                // [요청사항 반영] 가장 위에 있는 이름을 디폴트 값으로 설정
+                if (names.length > 0) {
+                    nameSelectHome.value = names[0];
+                }
+            }, (error) => {
+                console.error("Name listener error:", error);
+                showStatus("이름 목록 로드 중 오류 발생.", 'error');
+            });
+        }
+
+        function renderNameSelects() {
+            const selectHtml = names.map(name => `<option value="${name}">${name}</option>`).join('');
+            const baseOption = '<option value="">-- 이름 선택 안 함 --</option>';
+            nameSelectHome.innerHTML = baseOption + selectHtml;
+            
+            // [요청사항 반영] 이름 목록이 업데이트되면 디폴트 값 재설정
+            if (names.length > 0) {
+                nameSelectHome.value = names[0];
+            }
+        }
+
+        function renderNameList() {
+            nameListContainer.innerHTML = '';
+            if (names.length === 0) {
+                nameListContainer.innerHTML = '<p class="text-gray-500 text-sm p-1">저장된 이름이 없습니다.</p>';
+                return;
+            }
+
+            names.forEach(name => {
+                const item = document.createElement('div');
+                // cursor-grab을 사용하여 드래그 가능함을 표시
+                item.className = 'flex justify-between items-center p-1.5 border-b last:border-b-0 text-sm cursor-grab bg-white hover:bg-gray-100 rounded';
+                item.setAttribute('draggable', 'true');
+                item.setAttribute('data-name', name);
+                item.innerHTML = `
+                    <span class="truncate">${name}</span>
+                    <div class="flex gap-2 items-center">
+                        <i data-lucide="grip-vertical" class="w-4 h-4 text-gray-400"></i>
+                        <button data-name="${name}" class="delete-name-btn text-red-500 hover:text-red-700 ml-2" title="이름 삭제">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                `;
+                nameListContainer.appendChild(item);
+            });
+            lucide.createIcons();
+        }
+
+        async function saveNameOrder(newNames) {
+             if (!db || !userId) return;
+             try {
+                const nameDocRef = getNameDocRef();
+                await window.firebase.setDoc(nameDocRef, { 
+                    namesArray: newNames, 
+                    updatedAt: window.firebase.serverTimestamp() 
+                }, { merge: true });
+                showStatus('이름 순서가 성공적으로 저장되었습니다.', 'success');
+             } catch(error) {
+                 console.error("Failed to save new name order:", error);
+                 showStatus("순서 변경 저장 중 오류가 발생했습니다.", 'error');
+             }
+        }
+        
+        async function addName() {
+            if (!db || !userId) {
+                showStatus("데이터베이스 연결 준비 중입니다.", 'error');
+                return;
+            }
+            const newName = newNameInput.value.trim();
+            if (!newName) return;
+
+            const nameDocRef = getNameDocRef();
+            const docSnapshot = await window.firebase.getDoc(nameDocRef);
+            let updatedNames = docSnapshot.exists() ? docSnapshot.data().namesArray || [] : [];
+            
+            if (updatedNames.includes(newName)) {
+                showStatus(`이름 "${newName}"이 이미 존재합니다.`, 'error');
+                return;
+            }
+
+            updatedNames.push(newName);
+
+            try {
+                await window.firebase.setDoc(nameDocRef, { 
+                    namesArray: updatedNames, 
+                    updatedAt: window.firebase.serverTimestamp() 
+                }, { merge: true });
+                newNameInput.value = '';
+                showStatus(`이름 "${newName}"이 성공적으로 추가되었습니다.`, 'success');
+            } catch (error) {
+                console.error("Add name failed:", error);
+                showStatus("이름 추가 중 오류가 발생했습니다.", 'error');
+            }
+        }
+
+        async function deleteName(nameToDelete) {
+            if (!db || !userId) return;
+
+            const nameDocRef = getNameDocRef();
+            const docSnapshot = await window.firebase.getDoc(nameDocRef);
+            let updatedNames = docSnapshot.exists() ? docSnapshot.data().namesArray || [] : [];
+            
+            const newNames = updatedNames.filter(name => name !== nameToDelete);
+
+            try {
+                await window.firebase.setDoc(nameDocRef, { 
+                    namesArray: newNames, 
+                    updatedAt: window.firebase.serverTimestamp() 
+                }, { merge: true });
+                showStatus(`이름 "${nameToDelete}"이 삭제되었습니다.`, 'success');
+            } catch (error) {
+                console.error("Delete name failed:", error);
+                showStatus("이름 삭제 중 오류가 발생했습니다.", 'error');
+            }
+        }
+
+        // --- Drag and Drop Handlers (NEW) ---
+
+        function handleDragStart(e) {
+            const target = e.target.closest('div[draggable="true"]');
+            if (!target) return;
+            draggedItem = target;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedItem.dataset.name); // 데이터를 설정하지만 DOM 순서만 변경할 것임
+            setTimeout(() => {
+                target.classList.add('opacity-50', 'bg-yellow-200');
+            }, 0);
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault(); 
+            e.dataTransfer.dropEffect = 'move';
+            if (!draggedItem) return;
+
+            const target = e.target.closest('div[draggable="true"]');
+            if (target && target !== draggedItem) {
+                const container = nameListContainer;
+                const bounding = target.getBoundingClientRect();
+                const offset = bounding.y + (bounding.height / 2);
+                
+                // 마우스 위치에 따라 target 앞에 삽입하거나 뒤에 삽입
+                if (e.clientY > offset) {
+                    container.insertBefore(draggedItem, target.nextSibling);
+                } else {
+                    container.insertBefore(draggedItem, target);
+                }
+            }
+        }
+
+        async function handleDrop(e) {
+            e.preventDefault();
+            if (!draggedItem) return;
+            
+            draggedItem.classList.remove('opacity-50', 'bg-yellow-200');
+            
+            // 새 DOM 순서를 기반으로 이름 배열 재정렬
+            const newNames = Array.from(nameListContainer.children)
+                                .map(item => item.getAttribute('data-name'));
+            
+            // 순서가 변경되었을 경우에만 저장 요청
+            if (newNames.join(',') !== names.join(',')) {
+                await saveNameOrder(newNames);
+            }
+            draggedItem = null;
+        }
+
+        function handleDragEnd(e) {
+            // 드래그가 끝나면 opacity 복구
+            e.target.classList.remove('opacity-50', 'bg-yellow-200');
+            draggedItem = null;
+        }
+        
+        // --- Template UI/Data Logic (Rest remains largely the same) ---
+
+        function renderTemplateSelect() {
+            templateSelect.innerHTML = '<option value="">-- 템플릿을 선택하세요 --</option>';
+            templates.forEach(t => {
+                const option = document.createElement('option');
+                option.value = t.id;
+                option.textContent = t.title;
+                templateSelect.appendChild(option);
+            });
+            loadTemplateBtn.disabled = !templateSelect.value;
+        }
+
+        function renderTemplateList() {
+            templateListContainer.innerHTML = '';
+            if (templates.length === 0) {
+                templateListContainer.innerHTML = '<p class="text-gray-500 text-sm p-2">저장된 템플릿이 없습니다. 새로 만들어 보세요.</p>';
+                return;
+            }
+
+            templates.forEach(t => {
+                const item = document.createElement('div');
+                item.className = 'flex justify-between items-center p-3 hover:bg-gray-50 transition duration-100';
+                item.innerHTML = `
+                    <span class="font-medium text-gray-700 truncate">${t.title}</span>
+                    <div class="flex gap-2">
+                        <button data-id="${t.id}" class="edit-template-btn text-indigo-500 hover:text-indigo-700" title="편집">
+                            <i data-lucide="pencil" class="w-4 h-4"></i>
+                        </button>
+                        <button data-id="${t.id}" class="delete-template-btn text-red-500 hover:text-red-700" title="삭제">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                `;
+                templateListContainer.appendChild(item);
+            });
+            lucide.createIcons();
+        }
+
+        function showTemplateEditor(template = null) {
+            templateEditorPanel.classList.remove('hidden');
+            currentEditingTemplateId = template ? template.id : null;
+
+            editorTitleText.textContent = template ? `템플릿 편집: ${template.title}` : '새 템플릿 생성';
+            templateTitleInput.value = template ? template.title : '';
+            templateEditor.innerHTML = template ? template.content : 
+                `<p style="font-size: 16px; margin-bottom: 12pt;">새로운 템플릿 내용을 여기에 붙여넣거나 편집하세요.</p>
+                 <p style="font-size: 16px; margin-bottom: 12pt;">예시: Dear <span style="font-weight: bold;">[NAME_POS]</span>, 자세한 내용은 [LINK1_POS]에서 확인하세요.</p>`;
+        }
+
+        function hideTemplateEditor() {
+            templateEditorPanel.classList.add('hidden');
+            currentEditingTemplateId = null;
+        }
+
+        async function saveTemplate() {
+            if (!db || !userId) {
+                showStatus("데이터베이스 연결 준비 중입니다. 잠시 후 다시 시도해주세요.", 'error');
+                return;
+            }
+
+            const title = templateTitleInput.value.trim();
+            const content = templateEditor.innerHTML;
+
+            if (!title) {
+                showStatus("템플릿 제목을 입력해주세요.", 'error');
+                return;
+            }
+
+            const templateData = {
+                title: title,
+                content: content,
+                link1Placeholder: PLACEHOLDERS.LINK1,
+                link2Placeholder: PLACEHOLDERS.LINK2,
+                link3Placeholder: PLACEHOLDERS.LINK3,
+                link4Placeholder: PLACEHOLDERS.LINK4,
+                namePlaceholder: PLACEHOLDERS.NAME,
+                updatedAt: window.firebase.serverTimestamp()
+            };
+
+            try {
+                const templateRef = getCollectionRef('templates', true);
+                if (currentEditingTemplateId) {
+                    await window.firebase.setDoc(window.firebase.doc(templateRef, currentEditingTemplateId), templateData, { merge: true });
+                    showStatus(`템플릿 "${title}"이 성공적으로 업데이트되었습니다.`, 'success');
+                } else {
+                    templateData.createdAt = window.firebase.serverTimestamp();
+                    await window.firebase.addDoc(templateRef, templateData);
+                    showStatus(`새 템플릿 "${title}"이 성공적으로 저장되었습니다.`, 'success');
+                }
+                hideTemplateEditor();
+            } catch (error) {
+                console.error("Save template failed:", error);
+                showStatus("템플릿 저장 중 오류가 발생했습니다.", 'error');
+            }
+        }
+
+        async function deleteTemplate(templateId) {
+            if (!db || !userId) return;
+            
+            if (!confirm('정말로 이 템플릿을 삭제하시겠습니까?')) return;
+
+            try {
+                const templateRef = getCollectionRef('templates', true);
+                await window.firebase.deleteDoc(window.firebase.doc(templateRef, templateId));
+                showStatus("템플릿이 성공적으로 삭제되었습니다.", 'success');
+                if (currentLoadedTemplate && currentLoadedTemplate.id === templateId) {
+                    currentLoadedTemplate = null;
+                    previewArea.innerHTML = '<p class="text-gray-500 italic">삭제된 템플릿입니다. 새 템플릿을 로드해주세요.</p>';
+                    processBtn.disabled = true;
+                    downloadBtn.disabled = true;
+                }
+            } catch (error) {
+                console.error("Delete template failed:", error);
+                showStatus("템플릿 삭제 중 오류가 발생했습니다.", 'error');
+            }
+        }
+        
+        function loadSelectedTemplate() {
+            const selectedId = templateSelect.value;
+            if (!selectedId) {
+                currentLoadedTemplate = null;
+                processBtn.disabled = true;
+                downloadBtn.disabled = true;
+                previewArea.innerHTML = '<p class="text-gray-500 italic">템플릿을 선택해 주세요.</p>';
+                showStatus('로드할 템플릿을 선택하세요.', 'error');
+                return;
+            }
+
+            const template = templates.find(t => t.id === selectedId);
+            if (template) {
+                currentLoadedTemplate = template;
+                previewArea.innerHTML = template.content;
+                processBtn.disabled = false;
+                downloadBtn.disabled = true;
+                showStatus(`템플릿 "${template.title}"이 로드되었습니다. 치환 값을 입력하세요.`, 'success');
+            } else {
+                 showStatus('선택된 템플릿을 찾을 수 없습니다. 새로고침 후 다시 시도해주세요.', 'error');
+            }
+        }
+
+        function processTemplate() {
+            if (!currentLoadedTemplate) {
+                showStatus('먼저 **"선택한 템플릿 로드"** 버튼을 눌러 템플릿을 로드해주세요.', 'error');
+                return null;
+            }
+            
+            const templateHtml = currentLoadedTemplate.content;
+            const url1 = linkInput1.value.trim();
+            const url2 = linkInput2.value.trim();
+            const url3 = linkInput3.value.trim();
+            const url4 = linkInput4.value.trim();
+            const selectedName = nameSelectHome.value;
+
+            if (!url1) {
+                showStatus('링크 1 URL은 필수입니다. 유효한 링크를 입력해주세요.', 'error');
+                downloadBtn.disabled = true;
+                return null;
+            }
+            
+            try { new URL(url1); } catch (_) { showStatus('링크 1 URL의 형식이 유효하지 않습니다.', 'error'); downloadBtn.disabled = true; return null; }
+            if (url2) { try { new URL(url2); } catch (_) { showStatus('링크 2 URL의 형식이 유효하지 않습니다.', 'error'); downloadBtn.disabled = true; return null; } }
+            if (url3) { try { new URL(url3); } catch (_) { showStatus('링크 3 URL의 형식이 유효하지 않습니다.', 'error'); downloadBtn.disabled = true; return null; } }
+            if (url4) { try { new URL(url4); } catch (_) { showStatus('링크 4 URL의 형식이 유효하지 않습니다.', 'error'); downloadBtn.disabled = true; return null; } }
+
+            let processedHtml = templateHtml;
+            const linkBaseStyle = `text-decoration: underline; font-family: ${FONT_FAMILY};`;
+
+            // 1. Link 1 Substitution
+            const linkTag1 = `<a href="${url1}" target="_blank" style="color: #1a0dab; ${linkBaseStyle}">${url1}</a>`;
+            processedHtml = processedHtml.replace(
+                new RegExp(PLACEHOLDERS.LINK1.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'),
+                linkTag1
+            );
+
+            // 2. Link 2 Substitution
+            const linkTag2 = url2 ? 
+                `<a href="${url2}" target="_blank" style="color: #059669; ${linkBaseStyle}">${url2}</a>` : '';
+            processedHtml = processedHtml.replace(
+                new RegExp(PLACEHOLDERS.LINK2.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'),
+                linkTag2
+            );
+
+            // 3. Link 3 Substitution
+            const linkTag3 = url3 ? 
+                `<a href="${url3}" target="_blank" style="color: #8b5cf6; ${linkBaseStyle}">${url3}</a>` : '';
+            processedHtml = processedHtml.replace(
+                new RegExp(PLACEHOLDERS.LINK3.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'),
+                linkTag3
+            );
+
+            // 4. Link 4 Substitution
+            const linkTag4 = url4 ? 
+                `<a href="${url4}" target="_blank" style="color: #f97316; ${linkBaseStyle}">${url4}</a>` : '';
+            processedHtml = processedHtml.replace(
+                new RegExp(PLACEHOLDERS.LINK4.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'),
+                linkTag4
+            );
+
+            // 5. Name Substitution
+            const nameText = selectedName || 'Recipient';
+            processedHtml = processedHtml.replace(
+                new RegExp(PLACEHOLDERS.NAME.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'),
+                nameText
+            );
+
+            previewArea.innerHTML = processedHtml;
+            downloadBtn.disabled = false;
+            showStatus('플레이스홀더가 치환되었으며 미리보기가 업데이트되었습니다. 이제 HTML 파일을 다운로드할 수 있습니다.', 'success');
+
+            return processedHtml;
+        }
+
+        // Download HTML function (Unchanged)
+        function downloadHtml() {
+            const processedHtml = processTemplate();
+            
+            if (!processedHtml) {
+                showStatus('처리된 내용이 없거나 오류가 발생했습니다. 먼저 \'플레이스홀더 치환 및 미리보기\'를 클릭하세요.', 'error');
+                return;
+            }
+
+            const customerName = customerNameInput.value.trim();
+            const templateTitle = currentLoadedTemplate ? currentLoadedTemplate.title : '템플릿_문서';
+            
+            const now = new Date();
+            const year = now.getFullYear().toString().slice(-2);
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const day = now.getDate().toString().padStart(2, '0');
+            const dateStamp = `${year}${month}${day}`;
+
+            let filename = templateTitle.replace(/[^a-zA-Z0-9_\uAC00-\uD7A3]/g, '_'); 
+            
+            if (customerName) {
+                filename += `_${customerName.replace(/[^a-zA-Z0-9_\uAC00-\uD7A3]/g, '')}`; 
+            }
+            
+            filename += `_${dateStamp}.html`;
+
+            const fullHtmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Downloaded Document</title>
+    <!-- Enforce Arial font and standard document reset -->
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 40px;
+            color: #212121;
+            line-height: 1.6;
+            background-color: #ffffff;
+        }
+        /* Crucial: Override all inherited styles to enforce Arial */
+        .downloaded-content * {
+            font-family: 'Arial', sans-serif !important;
+        }
+        .downloaded-content {
+            box-sizing: border-box;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        /* Link styling for downloaded content */
+        a {
+            color: #1a0dab;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="downloaded-content">
+        ${processedHtml}
+    </div>
+</body>
+</html>
+            `.trim();
+
+            const blob = new Blob([fullHtmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showStatus(`HTML 파일이 성공적으로 다운로드되었습니다. 파일명: ${filename}`, 'success');
+        }
+
+        // --- Event Listeners Initialization ---
+
+        function initListeners() {
+            // Navigation
+            navHome.addEventListener('click', () => switchView('home'));
+            navEditor.addEventListener('click', () => switchView('editor'));
+
+            // Home View
+            templateSelect.addEventListener('change', (e) => {
+                loadTemplateBtn.disabled = !e.target.value;
+            });
+            loadTemplateBtn.addEventListener('click', loadSelectedTemplate);
+            processBtn.addEventListener('click', processTemplate);
+            downloadBtn.addEventListener('click', downloadHtml);
+
+            // Editor View - Template Management
+            newTemplateBtn.addEventListener('click', () => showTemplateEditor(null));
+            cancelEditBtn.addEventListener('click', hideTemplateEditor);
+            saveTemplateBtn.addEventListener('click', saveTemplate);
+            
+            templateListContainer.addEventListener('click', (e) => {
+                const editBtn = e.target.closest('.edit-template-btn');
+                const deleteBtn = e.target.closest('.delete-template-btn');
+
+                if (editBtn) {
+                    const templateId = editBtn.dataset.id;
+                    const templateToEdit = templates.find(t => t.id === templateId);
+                    if (templateToEdit) showTemplateEditor(templateToEdit);
+                } else if (deleteBtn) {
+                    deleteTemplate(deleteBtn.dataset.id);
+                }
+            });
+
+            // Editor View - Editing Toolbar
+            toolbar.addEventListener('click', (e) => {
+                const button = e.target.closest('.toolbar-button');
+                if (button) {
+                    executeCommand(button.dataset.command);
+                }
+            });
+            formatBlockSelect.addEventListener('change', (e) => executeCommand('formatBlock', `<${e.target.value}>`));
+            fontNameSelect.addEventListener('change', (e) => executeCommand('fontName', e.target.value));
+            
+            // [업데이트 반영] 글꼴 크기 적용 버튼 이벤트 처리
+            applyFontSizeBtn.addEventListener('click', () => {
+                const size = parseInt(fontSizeInput.value);
+                if (size >= 1 && size <= 7) {
+                    executeCommand('fontSize', size);
+                } else {
+                    showStatus('글꼴 크기는 1에서 7 사이의 유효한 숫자여야 합니다. (기본 크기 3)', 'error');
+                    fontSizeInput.value = 3; 
+                }
+            });
+
+            // [추가] 숫자 입력 필드에서 Enter 키를 눌렀을 때도 적용
+            fontSizeInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    applyFontSizeBtn.click();
+                }
+            });
+            
+            foreColorPicker.addEventListener('input', (e) => executeCommand('foreColor', e.target.value));
+            backColorPicker.addEventListener('input', (e) => executeCommand('hiliteColor', e.target.value));
+            
+            // Editor View - Name Management
+            addNameBtn.addEventListener('click', addName);
+            newNameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') addName(); });
+            nameListContainer.addEventListener('click', (e) => {
+                const deleteBtn = e.target.closest('.delete-name-btn');
+                if (deleteBtn) deleteName(deleteBtn.dataset.name);
+            });
+            
+            // [요청사항 반영] Drag & Drop Event Listeners
+            nameListContainer.addEventListener('dragstart', handleDragStart);
+            nameListContainer.addEventListener('dragover', handleDragOver);
+            nameListContainer.addEventListener('drop', handleDrop);
+            nameListContainer.addEventListener('dragend', handleDragEnd); // Clean up styling after drag/drop/cancel
+
+            // Global: Paste event handling to enforce Arial font on pasted content
+            templateEditor.addEventListener('paste', () => {
+                setTimeout(() => {
+                    const elements = templateEditor.querySelectorAll('*');
+                    elements.forEach(el => {
+                        if (!el.style.fontFamily) {
+                            el.style.fontFamily = FONT_FAMILY;
+                        }
+                    });
+                }, 0);
+            });
+
+            // Editor Command Helper
+            function executeCommand(command, value = null) {
+                templateEditor.focus();
+                // [요청사항 반영] 선택 영역에 포커스를 유지한 채 명령 실행
+                try {
+                    document.execCommand(command, false, value);
+                } catch (error) {
+                    console.error('Editing command failed:', command, error);
+                }
+            }
+        }
+
+        // --- Application Start ---
+        initListeners();
+        initFirebase();
+        switchView('home'); // Start on the main selection page
+
+    </script>
+</body>
+</html>

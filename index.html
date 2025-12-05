@@ -32,7 +32,7 @@
         const appIdFromCanvas = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const initialAuthTokenFromCanvas = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        // 🚨 여기에 실제 Firebase config 값을 입력하세요. (다른 장치에서 사용하려면 필수)
+        // 🚨 [수정 완료] 여기에 실제 Firebase config 값을 입력하세요. (다른 장치에서 사용하려면 필수)
         const customFirebaseConfig = {
             apiKey: "AIzaSyDdk_axp2Q9OANqleknWeYWK9DrxKWKeY4", 
             authDomain: "template-3530f.firebaseapp.com",
@@ -1174,11 +1174,10 @@
             initListeners();
             // 클라우드 동기화 모드를 사용합니다. (설정 누락 시 로컬 저장소로 자동 전환됨)
             initFirebase(); 
-            // switchView('home'); // initFirebase 내부에서 이미 호출되므로 제거
+            // initFirebase 내에서 switchView('home')이 호출됩니다.
         }
 
         initApp(); // 애플리케이션 시작
     </script>
 </body>
 </html>
-

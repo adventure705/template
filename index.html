@@ -10,10 +10,11 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Firebase SDK 로드 (클라우드 동기화를 위해 복구) -->
     <script type="module">
-        // 필요한 Firebase 모듈을 모두 import합니다.
+        
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // batch를 사용하기 위해 writeBatch, runTransaction을 추가합니다.
+        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // Firestore 디버그 로깅 활성화
@@ -22,17 +23,17 @@
         // 전역 변수 설정을 위한 헬퍼 함수
         window.firebase = {
             initializeApp, getAuth, signInAnonymously, signInWithCustomToken,
-            getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, serverTimestamp
+            getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, serverTimestamp, writeBatch
         };
         
         // =========================================================================
-        // ⚠️ 사용자 설정 영역: GitHub 등에 배포 시 이 부분을 실제 값으로 채워 넣으세요.
+        // ⚠️ 사용자 설정 영역
         // =========================================================================
         const firebaseConfigFromCanvas = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const appIdFromCanvas = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const initialAuthTokenFromCanvas = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        // 🚨 [수정 완료] 여기에 실제 Firebase config 값을 입력하세요. (다른 장치에서 사용하려면 필수)
+        // 🚨 여기에 실제 Firebase config 값을 입력하세요.
         const customFirebaseConfig = {
             apiKey: "AIzaSyDdk_axp2Q9OANqleknWeYWK9DrxKWKeY4", 
             authDomain: "template-3530f.firebaseapp.com",
@@ -125,8 +126,13 @@
             color: #4b5563;
         }
         /* Drag & Drop 스타일 */
-        #nameListContainer > div[draggable="true"] {
+        #nameListContainer > div[draggable="true"], #templateList > div[draggable="true"] {
             transition: background-color 0.2s;
+        }
+        
+        /* 템플릿 리스트 스타일 */
+        #templateList > div {
+            cursor: grab; /* 드래그 가능함을 명시 */
         }
     </style>
 </head>
@@ -247,11 +253,11 @@
 
             <!-- Editor View (Template Management & Name List) -->
             <div id="editorView" class="view-content hidden">
-                <h2 class="text-2xl font-bold mb-4 text-gray-800">1. 템플릿 관리</h2>
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">1. 템플릿 관리 (순서 변경 가능)</h2>
 
                 <!-- Template List -->
                 <div class="mb-6 p-4 border rounded-lg bg-white shadow-sm">
-                    <h3 class="text-xl font-semibold mb-3 border-b pb-2">저장된 템플릿 목록</h3>
+                    <h3 class="text-xl font-semibold mb-3 border-b pb-2">저장된 템플릿 목록 (드래그하여 순서 변경)</h3>
                     <div id="templateList" class="divide-y divide-gray-100">
                         <p class="text-gray-500 text-sm p-1">템플릿을 로드 중입니다...</p>
                     </div>
@@ -350,7 +356,7 @@
 
                 <!-- Name Manager Section (Moved to Editor View) -->
                 <div class="border p-4 rounded-lg bg-white shadow-sm">
-                    <h2 class="text-xl font-bold mb-4 text-gray-700">2. 이름 관리 (추가/삭제)</h2>
+                    <h2 class="text-xl font-bold mb-4 text-gray-700">2. 이름 관리 (추가/삭제/순서 변경)</h2>
                     <div class="flex gap-2 mb-3">
                         <input type="text" id="newNameInput" placeholder="추가할 이름을 입력하세요"
                                class="flex-grow p-2 border border-gray-300 rounded-lg text-sm">
@@ -414,7 +420,8 @@
         let names = []; 
         let currentEditingTemplateId = null;
         let currentLoadedTemplate = null;
-        let draggedItem = null;
+        let draggedNameItem = null;
+        let draggedTemplateItem = null; // New state for template D&D
 
         const PLACEHOLDERS = {
             LINK1: '[LINK1_POS]',
@@ -436,7 +443,7 @@
         let isAuthReady = false;
         
         // =========================================================
-        // ✅ FIX 1: 유틸리티 함수를 정의하여 ReferenceError를 해결
+        // ✅ 유틸리티 함수
         // =========================================================
         function showStatus(message, type = 'success') {
             statusMessage.textContent = message;
@@ -478,23 +485,20 @@
             lucide.createIcons(); 
         }
 
-        // Firestore 컬렉션 참조 가져오기 (이전 코드 재사용)
-        function getCollectionRef(collectionName, isPublic = true) {
+        // Firestore 컬렉션 참조 가져오기
+        function getCollectionRef(collectionName) {
             const { collection } = window.firebase;
             const currentAppId = window.appId || 'default-app-id';
-            
-            if (isPublic) {
-                return collection(db, 'artifacts', currentAppId, 'public', 'data', collectionName);
-            } else {
-                return collection(db, 'artifacts', currentAppId, 'users', userId, collectionName);
-            }
+            // 템플릿은 항상 공개 경로를 사용합니다.
+            return collection(db, 'artifacts', currentAppId, 'public', 'data', collectionName);
         }
 
-        // 이름 문서 참조 (단일 문서)
-        function getNameDocRef() {
+        // ✅ FIX: 이름 문서 참조 (공개 경로로 변경하여 기기 간 동기화)
+        function getSharedNamesDocRef() {
             const { doc } = window.firebase;
             const currentAppId = window.appId || 'default-app-id';
-            return doc(db, 'artifacts', currentAppId, 'users', userId, 'names', 'userNames');
+            // 'names' 컬렉션의 'sharedNames' 문서를 사용합니다.
+            return doc(db, 'artifacts', currentAppId, 'public', 'data', 'names', 'sharedNames');
         }
 
         // Firebase 초기화 및 인증
@@ -504,7 +508,6 @@
             const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, getFirestore } = window.firebase;
             const { firebaseConfig, initialAuthToken } = window;
             
-            // Firebase 설정이 유효한지 확인 (projectId가 placeholder가 아니고, apiKey가 존재하는지)
             const isConfigValid = firebaseConfig && firebaseConfig.projectId && firebaseConfig.apiKey && 
                                 firebaseConfig.projectId !== 'YOUR_PROJECT_ID_HERE' && firebaseConfig.apiKey !== 'YOUR_API_KEY_HERE';
 
@@ -528,13 +531,11 @@
 
                 } catch (error) {
                     console.error("Firebase initialization or authentication failed:", error);
-                    // 에러 발생 시 로컬 저장소로 폴백
                     showStatus("경고: Firebase 인증 또는 권한 오류가 발생했습니다. (로컬 저장소로 작동)", 'error');
                     isAuthReady = false;
                     loadLocalData();
                 }
             } else {
-                // Firebase Config가 설정되지 않은 경우 로컬 저장소로 대체
                 console.warn("Firebase config not set. Switching to Local Storage mode.");
                 isAuthReady = false;
                 loadLocalData(); 
@@ -548,9 +549,12 @@
             if (!isAuthReady) return;
 
             // 1. Templates Listener (Public)
-            const templateRef = getCollectionRef('templates', true);
+            const templateRef = getCollectionRef('templates');
             window.firebase.onSnapshot(templateRef, (snapshot) => {
+                // sortIndex를 기준으로 템플릿을 정렬합니다.
                 templates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                templates.sort((a, b) => (a.sortIndex || 0) - (b.sortIndex || 0));
+                
                 renderTemplateSelect();
                 renderTemplateList();
             }, (error) => {
@@ -558,8 +562,8 @@
                 showStatus("템플릿 목록 로드 중 오류 발생. (권한 확인 필요)", 'error');
             });
 
-            // 2. Names Listener (Private - single document)
-            const nameDocRef = getNameDocRef();
+            // 2. Names Listener (Shared Public)
+            const nameDocRef = getSharedNamesDocRef(); // 변경된 공개 경로 참조
             window.firebase.onSnapshot(nameDocRef, (docSnapshot) => {
                 if (docSnapshot.exists()) {
                     names = docSnapshot.data().namesArray || [];
@@ -582,6 +586,7 @@
         // --- Local Storage 대체 함수 (Fallback/Debug 용) ---
         function loadLocalData() {
             templates = JSON.parse(localStorage.getItem(TEMPLATE_STORAGE_KEY) || '[]');
+            templates.sort((a, b) => (a.sortIndex || 0) - (b.sortIndex || 0)); // 로컬에서도 정렬
             names = JSON.parse(localStorage.getItem(NAME_STORAGE_KEY) || '[]');
             renderTemplateSelect();
             renderTemplateList();
@@ -614,9 +619,15 @@
 
             templates.forEach(t => {
                 const item = document.createElement('div');
-                item.className = 'flex justify-between items-center p-3 hover:bg-gray-50 transition duration-100';
+                item.className = 'flex justify-between items-center p-3 hover:bg-gray-50 transition duration-100 rounded-lg cursor-grab'; // cursor-grab 추가
+                item.setAttribute('draggable', 'true'); // 드래그 가능 속성 추가
+                item.setAttribute('data-id', t.id); // 템플릿 ID 저장
+                item.setAttribute('data-sort-index', t.sortIndex || 0); // 정렬 인덱스 저장
                 item.innerHTML = `
-                    <span class="font-medium text-gray-700 truncate">${t.title}</span>
+                    <div class="flex items-center space-x-2 w-full">
+                        <i data-lucide="grip-vertical" class="w-4 h-4 text-gray-400"></i>
+                        <span class="font-medium text-gray-700 truncate flex-grow">${t.title}</span>
+                    </div>
                     <div class="flex gap-2">
                         <button data-id="${t.id}" class="edit-template-btn text-indigo-500 hover:text-indigo-700" title="편집">
                             <i data-lucide="pencil" class="w-4 h-4"></i>
@@ -629,6 +640,44 @@
                 templateListContainer.appendChild(item);
             });
             lucide.createIcons();
+        }
+        
+        // ✅ NEW: 템플릿 순서 저장 함수
+        async function saveTemplateOrder(newTemplateOrder) {
+            templates = newTemplateOrder; // 상태 업데이트
+            try {
+                if (isAuthReady) {
+                    const { writeBatch, getFirestore, doc } = window.firebase;
+                    const batch = writeBatch(db);
+                    const templateRef = getCollectionRef('templates');
+
+                    newTemplateOrder.forEach((t, index) => {
+                        const templateDocRef = doc(templateRef, t.id);
+                        batch.update(templateDocRef, { sortIndex: index });
+                    });
+                    
+                    await batch.commit();
+                    showStatus('템플릿 순서가 성공적으로 저장되었습니다.', 'success');
+
+                } else {
+                    // Local Storage 저장 로직
+                    newTemplateOrder.forEach((t, index) => {
+                        const templateIndex = templates.findIndex(item => item.id === t.id);
+                        if (templateIndex !== -1) {
+                            templates[templateIndex].sortIndex = index;
+                        }
+                    });
+                    templates.sort((a, b) => (a.sortIndex || 0) - (b.sortIndex || 0));
+                    localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+                    renderTemplateList(); // 로컬 모드에서는 직접 렌더링 호출
+                }
+                
+                renderTemplateSelect(); // Home Select도 업데이트
+
+            } catch (error) {
+                console.error("Failed to save new template order:", error);
+                showStatus("템플릿 순서 변경 저장 중 오류가 발생했습니다.", 'error');
+            }
         }
 
         // --- Template Editor Logic ---
@@ -657,6 +706,9 @@
                 showStatus("템플릿 제목을 입력해주세요.", 'error');
                 return;
             }
+            
+            // 새 템플릿인 경우, 현재 가장 큰 sortIndex 다음 값을 지정
+            const newSortIndex = templates.reduce((max, t) => Math.max(max, t.sortIndex || 0), -1) + 1;
 
             const templateData = {
                 title: title,
@@ -667,11 +719,16 @@
                 link4Placeholder: PLACEHOLDERS.LINK4,
                 namePlaceholder: PLACEHOLDERS.NAME,
             };
+            
+            if (!currentEditingTemplateId) {
+                // 새 템플릿일 때만 sortIndex를 추가
+                templateData.sortIndex = newSortIndex;
+            }
 
             try {
                 if (isAuthReady) {
                     // Firebase 저장 로직
-                    const templateRef = getCollectionRef('templates', true);
+                    const templateRef = getCollectionRef('templates');
                     if (currentEditingTemplateId) {
                         templateData.updatedAt = window.firebase.serverTimestamp();
                         await window.firebase.setDoc(window.firebase.doc(templateRef, currentEditingTemplateId), templateData, { merge: true });
@@ -685,9 +742,13 @@
                         const index = templates.findIndex(t => t.id === currentEditingTemplateId);
                         if (index !== -1) templates[index] = { ...templates[index], ...templateData, updatedAt: new Date().toISOString() };
                     } else {
-                        templates.push({ ...templateData, id: crypto.randomUUID(), updatedAt: new Date().toISOString() });
+                        templates.push({ ...templateData, id: crypto.randomUUID(), sortIndex: newSortIndex, updatedAt: new Date().toISOString() });
                     }
                     localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+                    // 로컬 모드에서는 수동으로 UI 업데이트 (리스너가 없으므로)
+                    templates.sort((a, b) => (a.sortIndex || 0) - (b.sortIndex || 0));
+                    renderTemplateList();
+                    renderTemplateSelect();
                 }
 
                 showStatus(`템플릿 "${title}"이 성공적으로 저장되었습니다.`, 'success');
@@ -704,12 +765,14 @@
             try {
                 if (isAuthReady) {
                     // Firebase 삭제 로직
-                    const templateRef = getCollectionRef('templates', true);
+                    const templateRef = getCollectionRef('templates');
                     await window.firebase.deleteDoc(window.firebase.doc(templateRef, templateId));
                 } else {
                     // Local Storage 삭제 로직
                     templates = templates.filter(t => t.id !== templateId);
                     localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+                    renderTemplateList();
+                    renderTemplateSelect();
                 }
                 
                 showStatus("템플릿이 성공적으로 삭제되었습니다.", 'success');
@@ -726,6 +789,62 @@
             }
         }
 
+        // --- Template Drag & Drop Handlers ---
+        
+        function handleTemplateDragStart(e) {
+            const target = e.target.closest('div[draggable="true"][data-id]');
+            if (!target) return;
+            draggedTemplateItem = target;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedTemplateItem.dataset.id);
+            setTimeout(() => {
+                target.classList.add('opacity-50', 'bg-yellow-200');
+            }, 0);
+        }
+
+        function handleTemplateDragOver(e) {
+            e.preventDefault(); 
+            e.dataTransfer.dropEffect = 'move';
+            if (!draggedTemplateItem) return;
+
+            const target = e.target.closest('div[draggable="true"][data-id]');
+            if (target && target !== draggedTemplateItem) {
+                const container = templateListContainer;
+                const bounding = target.getBoundingClientRect();
+                const offset = bounding.y + (bounding.height / 2);
+                
+                if (e.clientY > offset) {
+                    container.insertBefore(draggedTemplateItem, target.nextSibling);
+                } else {
+                    container.insertBefore(draggedTemplateItem, target);
+                }
+            }
+        }
+
+        function handleTemplateDrop(e) {
+            e.preventDefault();
+            if (!draggedTemplateItem) return;
+            
+            draggedTemplateItem.classList.remove('opacity-50', 'bg-yellow-200');
+            
+            const newTemplateOrder = Array.from(templateListContainer.children)
+                                .map(item => templates.find(t => t.id === item.getAttribute('data-id')));
+            
+            // 기존 순서와 다를 때만 저장 함수 호출
+            const currentTemplateIds = templates.map(t => t.id).join(',');
+            const newTemplateIds = newTemplateOrder.map(t => t.id).join(',');
+            
+            if (newTemplateIds !== currentTemplateIds) {
+                saveTemplateOrder(newTemplateOrder);
+            }
+            draggedTemplateItem = null;
+        }
+
+        function handleTemplateDragEnd(e) {
+            e.target.classList.remove('opacity-50', 'bg-yellow-200');
+            draggedTemplateItem = null;
+        }
+        
         // --- Name Management Logic (Firebase/Local 공통) ---
 
         function renderNameSelects() {
@@ -768,13 +887,14 @@
              names = newNames;
              try {
                 if (isAuthReady) {
-                     const nameDocRef = getNameDocRef();
+                     const nameDocRef = getSharedNamesDocRef(); // ✅ FIX: 공개 경로 사용
                      await window.firebase.setDoc(nameDocRef, { 
                         namesArray: newNames, 
                         updatedAt: window.firebase.serverTimestamp() 
                     }, { merge: true });
                 } else {
                     localStorage.setItem(NAME_STORAGE_KEY, JSON.stringify(names));
+                    renderNameList();
                 }
                 showStatus('이름 순서가 성공적으로 저장되었습니다.', 'success');
                 renderNameSelects();
@@ -797,7 +917,7 @@
             
             try {
                 if (isAuthReady) {
-                    const nameDocRef = getNameDocRef();
+                    const nameDocRef = getSharedNamesDocRef(); // ✅ FIX: 공개 경로 사용
                     await window.firebase.setDoc(nameDocRef, { 
                         namesArray: updatedNames, 
                         updatedAt: window.firebase.serverTimestamp() 
@@ -822,7 +942,7 @@
 
             try {
                 if (isAuthReady) {
-                    const nameDocRef = getNameDocRef();
+                    const nameDocRef = getSharedNamesDocRef(); // ✅ FIX: 공개 경로 사용
                     await window.firebase.setDoc(nameDocRef, { 
                         namesArray: newNames, 
                         updatedAt: window.firebase.serverTimestamp() 
@@ -840,43 +960,43 @@
             }
         }
 
-        // --- Drag and Drop Handlers ---
+        // --- Name Drag and Drop Handlers (기존 로직) ---
 
-        function handleDragStart(e) {
-            const target = e.target.closest('div[draggable="true"]');
+        function handleNameDragStart(e) {
+            const target = e.target.closest('div[draggable="true"][data-name]');
             if (!target) return;
-            draggedItem = target;
+            draggedNameItem = target;
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', draggedItem.dataset.name);
+            e.dataTransfer.setData('text/plain', draggedNameItem.dataset.name);
             setTimeout(() => {
                 target.classList.add('opacity-50', 'bg-yellow-200');
             }, 0);
         }
 
-        function handleDragOver(e) {
+        function handleNameDragOver(e) {
             e.preventDefault(); 
             e.dataTransfer.dropEffect = 'move';
-            if (!draggedItem) return;
+            if (!draggedNameItem) return;
 
-            const target = e.target.closest('div[draggable="true"]');
-            if (target && target !== draggedItem) {
+            const target = e.target.closest('div[draggable="true"][data-name]');
+            if (target && target !== draggedNameItem) {
                 const container = nameListContainer;
                 const bounding = target.getBoundingClientRect();
                 const offset = bounding.y + (bounding.height / 2);
                 
                 if (e.clientY > offset) {
-                    container.insertBefore(draggedItem, target.nextSibling);
+                    container.insertBefore(draggedNameItem, target.nextSibling);
                 } else {
-                    container.insertBefore(draggedItem, target);
+                    container.insertBefore(draggedNameItem, target);
                 }
             }
         }
 
-        function handleDrop(e) {
+        function handleNameDrop(e) {
             e.preventDefault();
-            if (!draggedItem) return;
+            if (!draggedNameItem) return;
             
-            draggedItem.classList.remove('opacity-50', 'bg-yellow-200');
+            draggedNameItem.classList.remove('opacity-50', 'bg-yellow-200');
             
             const newNames = Array.from(nameListContainer.children)
                                 .map(item => item.getAttribute('data-name'));
@@ -884,12 +1004,12 @@
             if (newNames.join(',') !== names.join(',')) {
                 saveNameOrder(newNames); // 비동기 함수 호출 (await 불필요)
             }
-            draggedItem = null;
+            draggedNameItem = null;
         }
 
-        function handleDragEnd(e) {
+        function handleNameDragEnd(e) {
             e.target.classList.remove('opacity-50', 'bg-yellow-200');
-            draggedItem = null;
+            draggedNameItem = null;
         }
         
         // --- Template Substitution Logic (Main Page) ---
@@ -1101,6 +1221,12 @@
                     deleteTemplate(deleteBtn.dataset.id);
                 }
             });
+            
+            // ✅ NEW: Template Drag & Drop Listeners
+            templateListContainer.addEventListener('dragstart', handleTemplateDragStart);
+            templateListContainer.addEventListener('dragover', handleTemplateDragOver);
+            templateListContainer.addEventListener('drop', handleTemplateDrop);
+            templateListContainer.addEventListener('dragend', handleTemplateDragEnd); 
 
             // Editor View - Editing Toolbar
             toolbar.addEventListener('click', (e) => {
@@ -1141,11 +1267,11 @@
                 if (deleteBtn) deleteName(deleteBtn.dataset.name);
             });
             
-            // Drag & Drop Event Listeners
-            nameListContainer.addEventListener('dragstart', handleDragStart);
-            nameListContainer.addEventListener('dragover', handleDragOver);
-            nameListContainer.addEventListener('drop', handleDrop);
-            nameListContainer.addEventListener('dragend', handleDragEnd); 
+            // Name Drag & Drop Event Listeners
+            nameListContainer.addEventListener('dragstart', handleNameDragStart); // 기존 함수 이름 변경
+            nameListContainer.addEventListener('dragover', handleNameDragOver);   // 기존 함수 이름 변경
+            nameListContainer.addEventListener('drop', handleNameDrop);         // 기존 함수 이름 변경
+            nameListContainer.addEventListener('dragend', handleNameDragEnd);   // 기존 함수 이름 변경
 
             // Global: Paste event handling to enforce Arial font on pasted content
             templateEditor.addEventListener('paste', () => {
@@ -1174,7 +1300,7 @@
             initListeners();
             // 클라우드 동기화 모드를 사용합니다. (설정 누락 시 로컬 저장소로 자동 전환됨)
             initFirebase(); 
-            // initFirebase 내에서 switchView('home')이 호출됩니다.
+            // initFirebase 내에서 startDataListeners가 호출됩니다.
         }
 
         initApp(); // 애플리케이션 시작
